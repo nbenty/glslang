@@ -119,6 +119,9 @@ enum TOperator {
     EOpConvFloatToUint64,
     EOpConvDoubleToUint64,
     EOpConvInt64ToUint64,
+    // BEGIN FALCOR
+    EOpConvSamplerToUVec2,
+    // END FALCOR
 
     //
     // binary operations

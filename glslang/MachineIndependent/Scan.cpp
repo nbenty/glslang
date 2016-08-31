@@ -462,6 +462,10 @@ void TScanContext::fillInKeywordMap()
     (*KeywordMap)["u64vec2"] =                 U64VEC2;
     (*KeywordMap)["u64vec3"] =                 U64VEC3;
     (*KeywordMap)["u64vec4"] =                 U64VEC4;
+    // BEGIN FALCOR
+    (*KeywordMap)["intptr_t"] =                INTPTR_T;
+    (*KeywordMap)["uintptr_t"] =               UINTPTR_T;
+    // END FALCOR
 
     (*KeywordMap)["sampler2D"] =               SAMPLER2D;
     (*KeywordMap)["samplerCube"] =             SAMPLERCUBE;
@@ -941,6 +945,15 @@ int TScanContext::tokenizeIdentifier()
         if (parseContext.profile != EEsProfile && parseContext.version >= 450)
             return keyword;
         return identifierOrType();
+
+    // BEGIN FALCOR
+    case INTPTR_T:
+    case UINTPTR_T:
+        // TODO: this isn't correct, but I'm just hacking right now
+        if (parseContext.extensionTurnedOn(E_GL_NV_shader_buffer_load))
+            return keyword;
+        return identifierOrType();
+        // END FALCOR
 
     case SAMPLERCUBEARRAY:
     case SAMPLERCUBEARRAYSHADOW:

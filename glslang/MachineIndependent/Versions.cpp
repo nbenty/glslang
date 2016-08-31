@@ -180,6 +180,10 @@ void TParseVersions::initializeExtensionBehavior()
     extensionBehavior[E_GL_ARB_sparse_texture2]              = EBhDisable;
     extensionBehavior[E_GL_ARB_sparse_texture_clamp]         = EBhDisable;
 //    extensionBehavior[E_GL_ARB_cull_distance]                = EBhDisable;    // present for 4.5, but need extension control over block members
+    // BEGIN FALCOR
+    extensionBehavior[E_GL_ARB_bindless_texture]             = EBhDisable;
+    extensionBehavior[E_GL_NV_shader_buffer_load]            = EBhDisable;
+    // END FALCOR
 
     extensionBehavior[E_GL_EXT_shader_non_constant_global_initializers] = EBhDisable;
 
@@ -667,6 +671,10 @@ void TParseVersions::doubleCheck(const TSourceLoc& loc, const char* op)
 void TParseVersions::int64Check(const TSourceLoc& loc, const char* op, bool builtIn)
 {
     if (! builtIn) {
+        // BEGIN FALCOR
+        if(extensionTurnedOn(E_GL_NV_shader_buffer_load))
+            return;
+        // END FALCOR
         requireExtensions(loc, 1, &E_GL_ARB_gpu_shader_int64, "shader int64");
         requireProfile(loc, ECoreProfile | ECompatibilityProfile, op);
         profileRequires(loc, ECoreProfile, 450, nullptr, op);

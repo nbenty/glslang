@@ -292,6 +292,9 @@ TIntermTyped* TIntermediate::addUnaryMath(TOperator op, TIntermTyped* child, TSo
     case EOpConstructBool:
     case EOpConstructFloat:
     case EOpConstructDouble:
+    // BEGIN FALCOR
+    case EOpConvSamplerToUVec2:
+    // END FALCOR
         return child;
     default: break; // some compilers want this
     }
@@ -418,8 +421,19 @@ TIntermTyped* TIntermediate::addConversion(TOperator op, const TType& type, TInt
     switch (node->getBasicType()) {
     case EbtVoid:
         return 0;
+// BEGIN FALCOR
+#if 1
+    case EbtSampler:
+        //: allow conversion of sampler to uvec2
+        if (op == EOpConstructUVec2)
+            break;
+        // fall through to:
+    case EbtAtomicUint:
+#else
     case EbtAtomicUint:
     case EbtSampler:
+#endif
+// END FALCOR
         // opaque types can be passed to functions
         if (op == EOpFunction)
             break;

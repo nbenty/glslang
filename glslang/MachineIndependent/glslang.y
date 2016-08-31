@@ -127,6 +127,9 @@ extern int yylex(YYSTYPE*, TParseContext&);
 %token <lex> COHERENT VOLATILE RESTRICT READONLY WRITEONLY
 %token <lex> DVEC2 DVEC3 DVEC4 DMAT2 DMAT3 DMAT4
 %token <lex> NOPERSPECTIVE FLAT SMOOTH LAYOUT __EXPLICITINTERPAMD
+// BEGIN FALCOR
+%token <lex> INTPTR_T UINTPTR_T
+// END FALCOR
 
 %token <lex> MAT2X2 MAT2X3 MAT2X4
 %token <lex> MAT3X2 MAT3X3 MAT3X4
@@ -840,9 +843,21 @@ function_header
     }
     ;
 
+/* BEGIN FALCOR */
+/* TODO: actually capture the initializer for use */
+opt_parameter_declarator_init
+    : /* empty */
+    | EQUAL initializer
+    ;
+/* END FALCOR */
+
 parameter_declarator
     // Type + name
+/* BEGIN FALCOR */
+    : type_specifier IDENTIFIER opt_parameter_declarator_init {
+/* ELSE 
     : type_specifier IDENTIFIER {
+/* END FALCOR */
         if ($1.arraySizes) {
             parseContext.profileRequires($1.loc, ENoProfile, 120, E_GL_3DL_array_objects, "arrayed type");
             parseContext.profileRequires($1.loc, EEsProfile, 300, 0, "arrayed type");
@@ -857,7 +872,11 @@ parameter_declarator
         $$.loc = $2.loc;
         $$.param = param;
     }
+/* BEGIN FALCOR */
+    | type_specifier IDENTIFIER array_specifier opt_parameter_declarator_init {
+/* ELSE 
     | type_specifier IDENTIFIER array_specifier {
+   END FALCOR */
         if ($1.arraySizes) {
             parseContext.profileRequires($1.loc, ENoProfile, 120, E_GL_3DL_array_objects, "arrayed type");
             parseContext.profileRequires($1.loc, EEsProfile, 300, 0, "arrayed type");
@@ -1343,6 +1362,18 @@ type_specifier_nonarray
         $$.init($1.loc, parseContext.symbolTable.atGlobalLevel());
         $$.basicType = EbtUint64;
     }
+/* BEGIN FALCOR */
+    | INTPTR_T {
+        parseContext.int64Check($1.loc, "64-bit integer", parseContext.symbolTable.atBuiltInLevel());
+        $$.init($1.loc, parseContext.symbolTable.atGlobalLevel());
+        $$.basicType = EbtInt64;
+    }
+    | UINTPTR_T {
+        parseContext.int64Check($1.loc, "64-bit unsigned integer", parseContext.symbolTable.atBuiltInLevel());
+        $$.init($1.loc, parseContext.symbolTable.atGlobalLevel());
+        $$.basicType = EbtUint64;
+    }
+/* END FALCOR */
     | BOOL {
         $$.init($1.loc, parseContext.symbolTable.atGlobalLevel());
         $$.basicType = EbtBool;

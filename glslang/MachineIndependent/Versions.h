@@ -128,6 +128,10 @@ const char* const E_GL_ARB_shader_ballot                = "GL_ARB_shader_ballot"
 const char* const E_GL_ARB_sparse_texture2              = "GL_ARB_sparse_texture2";
 const char* const E_GL_ARB_sparse_texture_clamp         = "GL_ARB_sparse_texture_clamp";
 //const char* const E_GL_ARB_cull_distance            = "GL_ARB_cull_distance";  // present for 4.5, but need extension control over block members
+// BEGIN FALCOR
+const char* const E_GL_ARB_bindless_texture             = "GL_ARB_bindless_texture";
+const char* const E_GL_NV_shader_buffer_load            = "GL_NV_shader_buffer_load";
+// END FALCOR
 
 const char* const E_GL_EXT_shader_non_constant_global_initializers = "GL_EXT_shader_non_constant_global_initializers";
 

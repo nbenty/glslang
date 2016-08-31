@@ -2495,8 +2495,22 @@ bool TParseContext::constructorError(const TSourceLoc& loc, TIntermNode* node, T
         return true;
     }
     if (op != EOpConstructStruct && typed->getBasicType() == EbtSampler) {
+// BEGIN FALCOR
+#if 1
+        profileRequires(loc, ENoProfile, 400, E_GL_ARB_bindless_texture, "constructing a sampler");
+        // TODO: handle more cases?
+        if (op == EOpConstructUVec2)
+        {}
+        else
+        {
+            error(loc, "sampler on convertible to uvec2", "constructor", "");
+            return true;
+        }
+#else
         error(loc, "cannot convert a sampler", "constructor", "");
         return true;
+#endif
+// END FALCOR
     }
     if (op != EOpConstructStruct && typed->getBasicType() == EbtAtomicUint) {
         error(loc, "cannot convert an atomic_uint", "constructor", "");
@@ -2604,7 +2618,14 @@ void TParseContext::samplerCheck(const TSourceLoc& loc, const TType& type, const
         return;
 
     if (type.getBasicType() == EbtStruct && containsFieldWithBasicType(type, EbtSampler))
+    // BEGIN FALCOR
+    {
+        if(extensionTurnedOn(E_GL_ARB_bindless_texture))
+        {}
+        else
         error(loc, "non-uniform struct contains a sampler or image:", type.getBasicTypeString().c_str(), identifier.c_str());
+    }
+    // END FALCOR
     else if (type.getBasicType() == EbtSampler && type.getQualifier().storage != EvqUniform) {
         // non-uniform sampler
         // not yet:  okay if it has an initializer
@@ -3744,6 +3765,10 @@ void TParseContext::arrayObjectCheck(const TSourceLoc& loc, const TType& type, c
 
 void TParseContext::opaqueCheck(const TSourceLoc& loc, const TType& type, const char* op)
 {
+    // BEGIN FALCOR
+    if(extensionTurnedOn(E_GL_ARB_bindless_texture))
+        return;
+    // END FALCOR
     if (containsFieldWithBasicType(type, EbtSampler))
         error(loc, "can't use with samplers or structs containing samplers", op, "");
 }
@@ -5563,6 +5588,13 @@ TIntermTyped* TParseContext::constructBuiltIn(const TType& type, TOperator op, T
         break;
 
     case EOpConstructUVec2:
+// BEGIN FALCOR
+        if (node && node->getBasicType() == EbtSampler)
+            basicOp = EOpConvSamplerToUVec2;
+        else
+            basicOp = EOpConstructUint;
+        break;
+// END FALCOR
     case EOpConstructUVec3:
     case EOpConstructUVec4:
     case EOpConstructUint:
@@ -5663,6 +5695,11 @@ void TParseContext::declareBlock(const TSourceLoc& loc, TTypeList& typeList, con
             profileRequires(memberLoc, ~EEsProfile, 440, E_GL_ARB_enhanced_layouts, "offset on block member");
         }
 
+        // BEGIN FALCOR
+        if (extensionTurnedOn(E_GL_NV_shader_buffer_load))
+        { /* allow opaque types in blocks */ }
+        else
+        // END FALCOR
         if (memberType.containsOpaque())
             error(memberLoc, "member of block cannot be or contain a sampler, image, or atomic_uint type", typeList[member].type->getFieldName().c_str(), "");
     }
