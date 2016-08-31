@@ -596,6 +596,9 @@ class TIntermBranch;
 class TIntermTyped;
 class TIntermMethod;
 class TIntermSymbol;
+// BEGIN FALCOR
+class TIntermLoop;
+// END FALCOR
 
 } // end namespace glslang
 
@@ -623,6 +626,9 @@ public:
     virtual       glslang::TIntermMethod*        getAsMethodNode()          { return 0; }
     virtual       glslang::TIntermSymbol*        getAsSymbolNode()          { return 0; }
     virtual       glslang::TIntermBranch*        getAsBranchNode()          { return 0; }
+    // BEGIN FALCOR
+    virtual       glslang::TIntermLoop*          getAsLoopNode()            { return 0; }
+    // END FALCOR
 
     virtual const glslang::TIntermTyped*         getAsTyped()         const { return 0; }
     virtual const glslang::TIntermOperator*      getAsOperator()      const { return 0; }
@@ -635,6 +641,9 @@ public:
     virtual const glslang::TIntermMethod*        getAsMethodNode()    const { return 0; }
     virtual const glslang::TIntermSymbol*        getAsSymbolNode()    const { return 0; }
     virtual const glslang::TIntermBranch*        getAsBranchNode()    const { return 0; }
+    // BEGIN FALCOR
+    virtual const glslang::TIntermLoop*          getAsLoopNode()      const { return 0; }
+    // END FALCOR
     virtual ~TIntermNode() { }
 
 protected:
@@ -695,6 +704,10 @@ public:
         test(aTest),
         terminal(aTerminal),
         first(testFirst) { }
+    // BEGIN FALCOR
+    virtual       glslang::TIntermLoop*          getAsLoopNode()            { return this; }
+    virtual const glslang::TIntermLoop*          getAsLoopNode()      const { return this; }
+    // END FALCOR
     virtual void traverse(TIntermTraverser*);
     TIntermNode*  getBody() const { return body; }
     TIntermTyped* getTest() const { return test; }
