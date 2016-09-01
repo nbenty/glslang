@@ -10,6 +10,9 @@
 #include "../glslang/Include/Common.h"
 #include "../glslang/Include/revision.h"
 
+#include <d3dcompiler.h>
+#pragma comment(lib, "d3dcompiler")
+
 #ifdef _MSC_VER
 #pragma warning(disable: 4996)
 #endif
@@ -232,41 +235,155 @@ public:
     glslang::TIntermediate* getIntermediate() { return intermediate; }
 };
 
-struct EmitContext
+struct EmitSpan;
+
+struct EmitSpanList
 {
-    FILE* stream;
+    EmitSpan*   first;
+    EmitSpan*   last;
 };
 
+struct EmitSpan
+{
+    char*           buffer;
+    char*           end;
+    char*           cursor;
+    EmitSpan*       next;
+    EmitSpanList    children;
+};
+
+void initEmitSpan(EmitSpan* span)
+{
+    memset(span, 0, sizeof(*span));
+}
+
+
+struct EmitSymbolInfo
+{
+    // TODO: anything worth tracking?
+};
+
+struct EmitStructInfo
+{
+    // TODO: anything worth tracking?
+};
+
+struct SharedEmitContext
+{
+    EmitSpan* mainSpan;
+    EmitSpan* structDeclSpan;
+
+    std::map<int, EmitSymbolInfo> mapSymbol;
+    std::map<glslang::TTypeList const*, EmitStructInfo> mapStruct;
+
+    EmitSpanList    spans;
+
+    SharedEmitContext()
+    {
+        memset(&spans, 0, sizeof(spans));
+    }
+};
+
+EmitSpan* allocateSpan()
+{
+    EmitSpan* span = new EmitSpan();
+    initEmitSpan(span);
+    return span;
+}
+
+void appendSpan(EmitSpanList* list, EmitSpan* span)
+{
+    if(auto last = list->last)
+    {
+        last->next = span;
+    }
+    else
+    {
+        list->first = span;
+    }
+    list->last = span;
+}
+
+EmitSpan* allocateSpan(EmitSpanList* list)
+{
+    EmitSpan* span = allocateSpan();
+    appendSpan(list, span);
+    return span;
+}
+
+EmitSpan* allocateSpan(SharedEmitContext* shared)
+{
+    // TODO: another allocator here?
+    return allocateSpan(&shared->spans);
+}
+
+void initSharedEmitContext(SharedEmitContext* shared)
+{
+    shared->structDeclSpan = allocateSpan(shared);
+    shared->mainSpan = allocateSpan(shared);
+}
+
+struct EmitContext
+{
+    SharedEmitContext*  shared;
+
+    // span for emitting main content
+    EmitSpan*           span;
+
+    // span for declaring local variables
+    EmitSpan*           localSpan;
+
+    // separator to put between decls when we need to split them...
+    char const* declSeparator;
+};
+
+EmitSpan* allocateSpan(EmitContext* context)
+{
+    EmitSpan* span = allocateSpan(context->shared);
+    context->span = span;
+    return span;
+}
+
 void emitExp(EmitContext* context, TIntermNode* node);
+void emitTypedDecl(EmitContext* context, glslang::TType const& type, glslang::TString const& name);
 
 void internalError(EmitContext* context, char const* message)
 {
-    fprintf(context->stream, "internal error: %s\n", message);
+    fprintf(stderr, "internal error: %s\n", message);
+    exit(1);
+}
+
+void emitData(EmitSpan* span, char const* data, size_t size)
+{
+    char* cursor = span->cursor;
+    char* end = span->end;
+    while(cursor + size > end)
+    {
+        char* buffer = span->buffer;
+        size_t oldSize = end - buffer;
+
+        size_t newSize = oldSize ? 2*oldSize : 1024;
+        char* newBuffer = (char*)realloc(buffer, newSize);
+        if(!newBuffer)
+        {
+            fprintf(stderr, "out of memory\n");
+            exit(1);
+        }
+
+        span->buffer = newBuffer;
+        end = newBuffer + newSize;
+        cursor = newBuffer + (cursor - buffer);
+
+        span->end = end;
+    }
+
+    memcpy(cursor, data, size);
+    span->cursor = cursor + size;
 }
 
 void emit(EmitContext* context, char const* begin, char const* end)
 {
-    fwrite(begin, end - begin, 1, context->stream);
-}
-
-void emitInt(EmitContext* context, int val)
-{
-    fprintf(context->stream, "%d", val);
-}
-
-void emitUInt(EmitContext* context, unsigned val)
-{
-    fprintf(context->stream, "%u", val);
-}
-
-void emitDouble(EmitContext* context, double val)
-{
-    fprintf(context->stream, "%g", val);
-}
-
-void emitFloat(EmitContext* context, double val)
-{
-    fprintf(context->stream, "%gf", val);
+    emitData(context->span, begin, end-begin);
 }
 
 void emit(EmitContext* context, char const* text)
@@ -274,10 +391,56 @@ void emit(EmitContext* context, char const* text)
     emit(context, text, text + strlen(text));
 }
 
+void emitInt(EmitContext* context, int val)
+{
+    char buffer[1024];
+    sprintf(buffer, "%d", val);
+    emit(context, buffer);
+}
+
+void emitUInt(EmitContext* context, unsigned val)
+{
+    char buffer[1024];
+    sprintf(buffer, "%u", val);
+    emit(context, buffer);
+}
+
+void emitDouble(EmitContext* context, double val)
+{
+    char buffer[1024];
+    sprintf(buffer, "%f", val);
+    emit(context, buffer);
+}
+
+void emitFloat(EmitContext* context, double val)
+{
+    char buffer[1024];
+    sprintf(buffer, "%ff", val);
+    emit(context, buffer);
+}
+
+static char const* const kReservedWords[] =
+{
+    "linear",
+    "texture",
+    NULL,
+};
+
 void emit(EmitContext* context, glslang::TString const& name)
 {
     char const* text = name.c_str();
     emit(context, text, text + name.length());
+
+    // TODO: comprehensive (and faster!) check for collision with names that
+    // are reserved in HLSL, but not in GLSL
+    for(int ii = 0; kReservedWords[ii] != NULL; ++ii)
+    {
+        if(strcmp(text, kReservedWords[ii]) == 0)
+        {
+            emit(context, "_1");
+            return;
+        }
+    }
 }
 
 void emitFuncName(EmitContext* context, glslang::TString const& name)
@@ -354,6 +517,90 @@ void emitDeclarator(EmitContext* context, Declarator* declarator)
     }
 }
 
+void emitStructDecl(EmitContext* inContext, glslang::TType const& type, glslang::TTypeList const* fields)
+{
+    EmitSpan* span = allocateSpan();
+
+    EmitContext subContext = *inContext;
+    subContext.span = span;
+    subContext.declSeparator = NULL;
+    EmitContext* context = &subContext;
+
+    emit(context, "struct ");
+    emit(context, type.getTypeName());
+    emit(context, "\n{\n");
+    for(auto field : *fields)
+    {
+        emitTypedDecl(context, *field.type, field.type->getFieldName());
+        emit(context, ";\n");
+    }
+    emit(context, "};\n");
+
+    appendSpan(&subContext.shared->structDeclSpan->children, span);
+}
+
+void ensureStructDecl(EmitContext* context, glslang::TType const& type)
+{
+    glslang::TTypeList const* fields = type.getStruct();
+    assert(fields);
+
+    auto ii = context->shared->mapStruct.find(fields);
+    if(ii == context->shared->mapStruct.end())
+    {
+        emitStructDecl(context, type, fields);
+        context->shared->mapStruct.insert(std::make_pair(fields, EmitStructInfo()));
+    }
+}
+
+void emitTextureTypedDecl(EmitContext* context, glslang::TType const& type, glslang::TSampler const& sampler, Declarator* declarator)
+{
+    switch(sampler.dim)
+    {
+    case glslang::Esd1D:      emit(context, "Texture1D");   break;
+    case glslang::Esd2D:      emit(context, "Texture2D");   break;
+    case glslang::Esd3D:      emit(context, "Texture3D");   break;
+    case glslang::EsdCube:    emit(context, "TextureCube"); break;
+    case glslang::EsdRect:    emit(context, "Texture2D");   break; // TODO: is this correct?
+    case glslang::EsdBuffer:  emit(context, "Buffer"); break;
+    case glslang::EsdSubpass:
+    default:
+        internalError(context, "unhandled case in 'emitTextureTypedDecl'");
+        break;
+    }
+
+    if(sampler.ms)
+    {
+        emit(context, "MS");
+    }
+    if(sampler.arrayed)
+    {
+        emit(context, "Array");
+    }
+
+    switch (sampler.type) {
+    case glslang::EbtFloat:
+        break;
+    case glslang::EbtInt:   emit(context, "<int4>");    break;
+    case glslang::EbtUint:  emit(context, "<uint4>");   break;
+    default:
+        internalError(context, "unhandled case in 'emitTextureTypedDecl'");
+        break;
+    }
+
+}
+
+void emitSamplerTypedDecl(EmitContext* context, glslang::TType const& type, glslang::TSampler const& sampler, Declarator* declarator)
+{
+    if(sampler.shadow)
+    {
+        emit(context, "SamplerComparisonState");
+    }
+    else
+    {
+        emit(context, "SamplerState");
+    }
+}
+
 void emitSimpleTypedDecl(EmitContext* context, glslang::TType const& type, Declarator* declarator)
 {
     // only dealing with HLSL for now
@@ -365,8 +612,8 @@ void emitSimpleTypedDecl(EmitContext* context, glslang::TType const& type, Decla
     CASE(Double, double);
     CASE(Int, int);
     CASE(Uint, uint);
-    CASE(Int64, int64);
-    CASE(Uint64, uint64);
+    CASE(Int64, int64_t);
+    CASE(Uint64, uint64_t);
     CASE(Bool, bool);
     CASE(AtomicUint, atomic_uint); // TODO: not actually in HLSL
 #undef CASE
@@ -389,14 +636,23 @@ void emitSimpleTypedDecl(EmitContext* context, glslang::TType const& type, Decla
                 Declarator suffix = { kDeclaratorFlavor_Suffix, declarator };
 
                 suffix.suffix = "_tex";
-                emit(context, "Texure2D ");
+                emitTextureTypedDecl(context, type, sampler, &suffix);
                 emitDeclarator(context, &suffix);
 
                 // TODO: need to emit an appropriate separator here!
+                if(context->declSeparator)
+                {
+                    emit(context, context->declSeparator);
+                }
+                else
+                {
+                    emit(context, ";\n");
+                }
 
                 suffix.suffix = "_samp";
-                emit(context, "SamplerState ");
+                emitSamplerTypedDecl(context, type, sampler, &suffix);
                 emitDeclarator(context, &suffix);
+                return;
             }
             else
             {
@@ -409,6 +665,8 @@ void emitSimpleTypedDecl(EmitContext* context, glslang::TType const& type, Decla
     case glslang::EbtStruct:
     case glslang::EbtBlock:
         {
+            ensureStructDecl(context, type);
+
             // TODO: this assumes `struct` declarations will
             // always be encountered before references, and
             // that we have no scoping issues...
@@ -437,7 +695,7 @@ void emitSimpleTypedDecl(EmitContext* context, glslang::TType const& type, Decla
 
 void emitTypedDecl(EmitContext* context, glslang::TType const& type, Declarator* declarator)
 {
-    Declarator arrayDeclarator = { kDeclaratorFlavor_Array, NULL };
+    Declarator arrayDeclarator = { kDeclaratorFlavor_Array, declarator };
     if( type.isArray() )
     {
         arrayDeclarator.type = &type;
@@ -459,6 +717,29 @@ void emitTypeName(EmitContext* context, glslang::TType const& type)
     emitTypedDecl(context, type, NULL);
 }
 
+void emitArg(EmitContext* context, TIntermNode* node)
+{
+    if(auto typed = node->getAsTyped())
+    {
+        glslang::TType const& type = typed->getType();
+        if(type.getBasicType() == glslang::EbtSampler)
+        {
+            glslang::TSampler const& sampler = type.getSampler();
+            if(sampler.sampler || sampler.combined)
+            {
+                // HACK: emit the exp twice, with a different suffix each time:
+                emitExp(context, node);
+                emit(context, "_tex, ");
+                emitExp(context, node);
+                emit(context, "_samp");
+                return;
+            }
+        }
+    }
+
+    emitExp(context, node);
+}
+
 void emitArgList(EmitContext* context, glslang::TIntermAggregate* node)
 {
     bool first = true;
@@ -467,7 +748,7 @@ void emitArgList(EmitContext* context, glslang::TIntermAggregate* node)
         if(!first) emit(context, ", ");
         first = false;
 
-        emitExp(context, arg);
+        emitArg(context, arg);
     }
 }
 
@@ -631,6 +912,17 @@ void emitConstantExp(EmitContext* context, glslang::TType const& type, glslang::
 
 void emitConstructorCall(EmitContext* context, glslang::TIntermAggregate* node)
 {
+    // HLSL uses cast syntax for single-argument case
+    if(node->getSequence().size() == 1)
+    {
+        emit(context, "((");
+        emitTypeName(context, node->getType());
+        emit(context, ") ");
+        emitArgList(context, node);
+        emit(context, ")");
+        return;
+    }
+
     emitTypeName(context, node->getType());
     emit(context, "(");
     emitArgList(context, node);
@@ -643,6 +935,109 @@ void emitConversion(EmitContext* context, glslang::TIntermUnary* node)
     emit(context, "(");
     emitExp(context, node->getOperand());
     emit(context, ")");
+}
+
+EmitSymbolInfo emitLocalVarDecl(EmitContext* inContext, glslang::TIntermSymbol* node)
+{
+    // redirect output to the right place for locals
+    // TODO: can't do that for opaque types...
+    EmitContext context = *inContext;
+    context.span = context.localSpan;
+
+    emitTypedDecl(&context, node->getType(), node->getName());
+    emit(&context, ";\n");
+
+    EmitSymbolInfo info;
+    return info;
+}
+
+EmitSymbolInfo emitUniformDecl(EmitContext* context, glslang::TIntermSymbol* node)
+{
+    // TODO: need to direct this to the right place!!!
+    emit(context, "uniform ");
+    emitTypedDecl(context, node->getType(), node->getName());
+    emit(context, ";\n");
+
+    EmitSymbolInfo info;
+    return info;
+}
+
+EmitSymbolInfo emitUniformBlockDecl(EmitContext* context, glslang::TIntermSymbol* node)
+{
+    // TODO: maybe don't discover uniform blocks on the fly like this,
+    // and instead use the reflection interface to walk them more directly
+
+    // TODO: need to direct this to the right place!!!
+    emit(context, "cbuffer ");
+    emit(context, node->getName());
+    emit(context, "\n{\n");
+    // TODO: enumerate the members here!!!
+    emit(context, "};\n");
+
+    EmitSymbolInfo info;
+    return info;
+}
+
+EmitSymbolInfo emitSymbolDecl(EmitContext* context, glslang::TIntermSymbol* node)
+{
+    EmitSymbolInfo info;
+    glslang::TType const& type = node->getType();
+
+    if(type.getQualifier().isPipeInput())
+    {
+    }
+    else if(type.getQualifier().isPipeOutput())
+    {
+    }
+    else if(type.getQualifier().isUniformOrBuffer())
+    {
+        if(type.getQualifier().layoutPushConstant)
+        {
+            // TODO: map Vulkan->D3D12
+            internalError(context, "uhandled case in 'emitSymbolDecl'");
+        }
+        else if(type.getBasicType() == glslang::EbtBlock)
+        {
+            emitUniformBlockDecl(context, node);
+        }
+        else
+        {
+            emitUniformDecl(context, node);
+        }
+        // 
+    }
+    else
+    {
+        switch(type.getQualifier().storage)
+        {
+        case glslang::EvqIn:
+        case glslang::EvqInOut:
+            // function parameters already handled
+            break;
+
+        case glslang::EvqConstReadOnly:
+        case glslang::EvqTemporary:
+            return emitLocalVarDecl(context, node);
+
+        default:
+            internalError(context, "uhandled case in 'emitSymbolDecl'");
+            break;
+        }
+    }
+    return info;
+}
+
+void emitSymbolExp(EmitContext* context, glslang::TIntermSymbol* node)
+{
+    auto ii = context->shared->mapSymbol.find(node->getId());
+    if(ii == context->shared->mapSymbol.end())
+    {
+        EmitSymbolInfo info = emitSymbolDecl(context, node);
+        context->shared->mapSymbol.insert(std::make_pair(node->getId(), info));
+    }
+
+    // TODO: some special-casing for nodes of composite texture-sampler type
+    emit(context, node->getName());
 }
 
 void emitExp(EmitContext* context, TIntermNode* node)
@@ -1034,8 +1429,7 @@ void emitExp(EmitContext* context, TIntermNode* node)
     }
     else if(auto nn = node->getAsSymbolNode())
     {
-        // TODO: some special-casing for nodes of composite texture-sampler type
-        emit(context, nn->getName());
+        emitSymbolExp(context, nn);
     }
     else if(auto nn = node->getAsSelectionNode())
     {
@@ -1236,6 +1630,7 @@ void emitFuncDecl(EmitContext* context, glslang::TIntermAggregate* funcDecl)
     emit(context, "(");
 
     glslang::TIntermSequence& params = funcDecl->getSequence()[0]->getAsAggregate()->getSequence();
+    context->declSeparator = ", ";
     bool first = true;
     for(auto pp : params)
     {
@@ -1249,17 +1644,39 @@ void emitFuncDecl(EmitContext* context, glslang::TIntermAggregate* funcDecl)
         glslang::TIntermSymbol* param = pp->getAsSymbolNode();
         glslang::TType const& paramType = param->getType();
 
-        // TODO: `out` modifier, etc.
+        switch(paramType.getQualifier().storage)
+        {
+        case glslang::EvqInOut:
+            emit(context, "in out ");
+            break;
+        case glslang::EvqOut:
+            emit(context, "out ");
+            break;
+        default:
+            break;
+        }
 
         emitTypedDecl(context, paramType, param->getName());
+
+        // record that we've declared the parameter, so we don't repeat work
+        context->shared->mapSymbol.insert(std::make_pair(param->getId(), EmitSymbolInfo()));
         
     }
+    context->declSeparator = NULL;
     emit(context, ")\n");
     // TODO: how do we distinguish forward declaration?
     emit(context, "{\n");
+
+
+    EmitSpan* localSpan = allocateSpan(context);
+    EmitSpan* restSpan = allocateSpan(context);
+
+    EmitContext bodyContext = *context;
+    bodyContext.localSpan = localSpan;
+
     for(auto child : funcDecl->getSequence())
     {
-        emitStmt(context, child);
+        emitStmt(&bodyContext, child);
     }
     emit(context, "}\n");
 }
@@ -1316,6 +1733,51 @@ void emitDecls(EmitContext* context, TIntermNode* node)
     }
 }
 
+size_t computeSize(EmitSpanList const& spans)
+{
+    size_t size = 0;
+    for(auto span = spans.first; span; span = span->next)
+    {
+        size_t spanSize = (span->cursor - span->buffer);
+        size_t childSize = computeSize(span->children);
+
+        size += spanSize + childSize;
+    }
+    return size;
+}
+
+void write(EmitSpanList const& spans, char** ioCursor)
+{
+    char*& cursor = *ioCursor;
+    for(auto span = spans.first; span; span = span->next)
+    {
+        size_t spanSize = (span->cursor - span->buffer);
+        memcpy(cursor, span->buffer, spanSize);
+        cursor += spanSize;
+
+        write(span->children, &cursor);
+    }
+}
+
+StringSpan join(SharedEmitContext* context)
+{
+    size_t size = computeSize(context->spans);
+
+    char* buffer = (char*)malloc(size + 1);
+    if(!buffer)
+    {
+        fprintf(stderr, "out of memory\n");
+        exit(1);
+    }
+
+    char* cursor = buffer;
+    write(context->spans, &cursor);
+
+    buffer[size] = 0;
+    StringSpan result = { buffer, buffer + size };
+    return result;
+}
+
 int main(
     int argc,
     char** argv)
@@ -1366,29 +1828,71 @@ int main(
 
         glslang::TIntermediate* intermediate = ((HackShader*) shader)->getIntermediate();
 
-        FILE* outFile = stdout;
+        SharedEmitContext sharedEmitContext;
+        initSharedEmitContext(&sharedEmitContext);
+        EmitContext emitContext = { &sharedEmitContext, sharedEmitContext.mainSpan };
+        emitDecls(&emitContext, intermediate->getTreeRoot());
+
+        StringSpan outputText = join(&sharedEmitContext);
         if(options.outputPath)
         {
+            FILE* outputFile = fopen(options.outputPath, "w");
+            if(!outputFile)
+            {
+                fprintf(stderr, "failed to open '%' for writing\n", options.outputPath);
+                exit(1);
+            }
+            fwrite(outputText.begin, outputText.end - outputText.begin, 1, outputFile);
+            fclose(outputFile);
+        }
+
+        // pass to D3DCompiler just for a sanity check
+
+        ID3DBlob* codeBlob = NULL;
+        ID3DBlob* errorBlob = NULL;
+        HRESULT hr = D3DCompile(outputText.begin, outputText.end - outputText.begin,
+            "test.hlsl",
+            NULL,
+            NULL,
+            "main",
+            "ps_5_0",
+            0,
+            0,
+            &codeBlob,
+            &errorBlob);
+        if(errorBlob)
+        {
+            fprintf(stderr, "%s", errorBlob->GetBufferPointer());
+            errorBlob->Release();
+        }
+        if(FAILED(hr))
+        {
+            exit(1);
+        }
+        if(codeBlob)
+        {
+            codeBlob->Release();
+        }
+
+/*
+
+        FILE* outFile = stdout;
+        if(options.outputPath)
+        {"
             FILE* file = fopen(options.outputPath, "w");
             if(!file)
             {
                 fprintf(stderr, "failed to open '%s' for writing\n", options.outputPath);
                 exit(1);
             }
-            else
-            {
-                outFile = file;
-            }
+            dump(&sharedEmitContext, file);
+            fclose(file);
         }
-
-        EmitContext context;
-        context.stream = outFile;
-        emitDecls(&context, intermediate->getTreeRoot());
-
-        if(outFile != stdout)
+        else
         {
-            fclose(outFile);
+            dump(&sharedEmitContext, stdout);
         }
+*/
 
         // clean up
 
