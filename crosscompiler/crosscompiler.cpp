@@ -260,13 +260,29 @@ void initEmitSpan(EmitSpan* span)
 
 struct EmitSymbolInfo
 {
-    // TODO: anything worth tracking?
+    std::string name; // might be different than original symbol name
 };
 
 struct EmitStructInfo
 {
     // TODO: anything worth tracking?
 };
+
+struct EmitNameScope
+{
+    EmitNameScope*  parent = NULL;
+    std::set<std::string> namesUsed;
+};
+
+bool isNameUsed(EmitNameScope* scope, std::string const& name)
+{
+    return scope->namesUsed.find(name) != scope->namesUsed.end();
+}
+
+void markNameUsed(EmitNameScope* scope, std::string const& name)
+{
+    scope->namesUsed.insert(name);
+}
 
 struct SharedEmitContext
 {
@@ -275,6 +291,8 @@ struct SharedEmitContext
 
     std::map<int, EmitSymbolInfo> mapSymbol;
     std::map<glslang::TTypeList const*, EmitStructInfo> mapStruct;
+    EmitNameScope reservedNames;
+    EmitNameScope globalNames;
 
     EmitSpanList    spans;
 
@@ -321,6 +339,12 @@ void initSharedEmitContext(SharedEmitContext* shared)
 {
     shared->structDeclSpan = allocateSpan(shared);
     shared->mainSpan = allocateSpan(shared);
+
+    shared->globalNames.parent = &shared->reservedNames;
+
+    // reserve names that are keywords in HLSL, but not GLSL
+    markNameUsed(&shared->reservedNames, "texture");
+    markNameUsed(&shared->reservedNames, "linear");
 }
 
 struct EmitContext
@@ -335,6 +359,9 @@ struct EmitContext
 
     // separator to put between decls when we need to split them...
     char const* declSeparator;
+
+    // scope for checking that names are unique
+    EmitNameScope*  nameScope;
 };
 
 EmitSpan* allocateSpan(EmitContext* context)
@@ -346,6 +373,7 @@ EmitSpan* allocateSpan(EmitContext* context)
 
 void emitExp(EmitContext* context, TIntermNode* node);
 void emitTypedDecl(EmitContext* context, glslang::TType const& type, glslang::TString const& name);
+void emitTypedDecl(EmitContext* context, glslang::TType const& type, std::string const& name);
 
 void internalError(EmitContext* context, char const* message)
 {
@@ -426,21 +454,16 @@ static char const* const kReservedWords[] =
     NULL,
 };
 
+void emit(EmitContext* context, std::string const& name)
+{
+    char const* text = name.c_str();
+    emit(context, text, text + name.length());
+}
+
 void emit(EmitContext* context, glslang::TString const& name)
 {
     char const* text = name.c_str();
     emit(context, text, text + name.length());
-
-    // TODO: comprehensive (and faster!) check for collision with names that
-    // are reserved in HLSL, but not in GLSL
-    for(int ii = 0; kReservedWords[ii] != NULL; ++ii)
-    {
-        if(strcmp(text, kReservedWords[ii]) == 0)
-        {
-            emit(context, "_1");
-            return;
-        }
-    }
 }
 
 void emitFuncName(EmitContext* context, glslang::TString const& name)
@@ -468,7 +491,7 @@ struct Declarator
     Declarator*         next;
     union
     {
-        glslang::TString const* name;
+        char const*             name;
         glslang::TType const*   type;
         char const*             suffix;
     };
@@ -484,12 +507,12 @@ void emitDeclarator(EmitContext* context, Declarator* declarator)
     {
     case kDeclaratorFlavor_Name:
         emit(context, " ");
-        emit(context, *declarator->name);
+        emit(context, declarator->name);
         break;
 
     case kDeclaratorFlavor_FuncName:
         emit(context, " ");
-        emitFuncName(context, *declarator->name);
+        emitFuncName(context, declarator->name);
         break;
 
     case kDeclaratorFlavor_Suffix:
@@ -531,7 +554,16 @@ void emitStructDecl(EmitContext* inContext, glslang::TType const& type, glslang:
     emit(context, "\n{\n");
     for(auto field : *fields)
     {
-        emitTypedDecl(context, *field.type, field.type->getFieldName());
+        // Here we check if the field name is a reserved word, and rename it if needed.
+        // TODO: need a more robust handling here, since all the use sites need
+        // to deal with this as well...
+        std::string fieldName = field.type->getFieldName().c_str();
+        if(isNameUsed(&context->shared->reservedNames, fieldName))
+        {
+            fieldName += "_1";
+        }
+
+        emitTypedDecl(context, *field.type, fieldName);
         emit(context, ";\n");
     }
     emit(context, "};\n");
@@ -705,10 +737,17 @@ void emitTypedDecl(EmitContext* context, glslang::TType const& type, Declarator*
     emitSimpleTypedDecl(context, type, declarator);
 }
 
+void emitTypedDecl(EmitContext* context, glslang::TType const& type, std::string const& name)
+{
+    Declarator nameDeclarator = { kDeclaratorFlavor_Name, NULL };
+    nameDeclarator.name = name.c_str();
+    emitTypedDecl(context, type, &nameDeclarator);
+}
+
 void emitTypedDecl(EmitContext* context, glslang::TType const& type, glslang::TString const& name)
 {
     Declarator nameDeclarator = { kDeclaratorFlavor_Name, NULL };
-    nameDeclarator.name = &name;
+    nameDeclarator.name = name.c_str();
     emitTypedDecl(context, type, &nameDeclarator);
 }
 
@@ -937,33 +976,83 @@ void emitConversion(EmitContext* context, glslang::TIntermUnary* node)
     emit(context, ")");
 }
 
+bool isNameUsed(EmitContext* context, std::string const& name)
+{
+    // Note: we don't walk up the chain of scopes, so a local name
+    // is allowed to conflict with a global name
+    if(context->nameScope && isNameUsed(context->nameScope, name))
+        return true;
+
+    if(isNameUsed(&context->shared->reservedNames, name))
+        return true;
+
+    return false;
+}
+
+EmitSymbolInfo createLocalName(EmitContext* context, glslang::TString const& text)
+{
+    std::string name = text.c_str();
+    if(!isNameUsed(context, name))
+    {
+        EmitSymbolInfo info;
+        info.name = name;
+        markNameUsed(context->nameScope, name);
+        return info;
+    }
+    else
+    {
+        for(int ii = 0;; ii++)
+        {
+            std::string newName = name + "_" + std::to_string(ii);
+            if(!isNameUsed(context, newName))
+            {
+                EmitSymbolInfo info;
+                info.name = newName;
+                markNameUsed(context->nameScope, newName);
+                return info;
+            }
+        }
+    }
+}
+
+EmitSymbolInfo createGlobalName(EmitContext* context, glslang::TString const& text)
+{
+    EmitSymbolInfo info;
+    info.name = text.c_str();
+    return info;
+}
+
 EmitSymbolInfo emitLocalVarDecl(EmitContext* inContext, glslang::TIntermSymbol* node)
 {
+    EmitSymbolInfo info = createLocalName(inContext, node->getName());
+
     // redirect output to the right place for locals
     // TODO: can't do that for opaque types...
     EmitContext context = *inContext;
     context.span = context.localSpan;
 
-    emitTypedDecl(&context, node->getType(), node->getName());
+    emitTypedDecl(&context, node->getType(), info.name);
     emit(&context, ";\n");
 
-    EmitSymbolInfo info;
     return info;
 }
 
 EmitSymbolInfo emitUniformDecl(EmitContext* context, glslang::TIntermSymbol* node)
 {
+    EmitSymbolInfo info = createGlobalName(context, node->getName());
+
     // TODO: need to direct this to the right place!!!
     emit(context, "uniform ");
     emitTypedDecl(context, node->getType(), node->getName());
     emit(context, ";\n");
 
-    EmitSymbolInfo info;
     return info;
 }
 
 EmitSymbolInfo emitUniformBlockDecl(EmitContext* context, glslang::TIntermSymbol* node)
 {
+    EmitSymbolInfo info = createGlobalName(context, node->getName());
+
     // TODO: maybe don't discover uniform blocks on the fly like this,
     // and instead use the reflection interface to walk them more directly
 
@@ -974,7 +1063,6 @@ EmitSymbolInfo emitUniformBlockDecl(EmitContext* context, glslang::TIntermSymbol
     // TODO: enumerate the members here!!!
     emit(context, "};\n");
 
-    EmitSymbolInfo info;
     return info;
 }
 
@@ -998,11 +1086,11 @@ EmitSymbolInfo emitSymbolDecl(EmitContext* context, glslang::TIntermSymbol* node
         }
         else if(type.getBasicType() == glslang::EbtBlock)
         {
-            emitUniformBlockDecl(context, node);
+            return emitUniformBlockDecl(context, node);
         }
         else
         {
-            emitUniformDecl(context, node);
+            return emitUniformDecl(context, node);
         }
         // 
     }
@@ -1027,17 +1115,23 @@ EmitSymbolInfo emitSymbolDecl(EmitContext* context, glslang::TIntermSymbol* node
     return info;
 }
 
-void emitSymbolExp(EmitContext* context, glslang::TIntermSymbol* node)
+EmitSymbolInfo getSymbolInfo(EmitContext* context, glslang::TIntermSymbol* node)
 {
     auto ii = context->shared->mapSymbol.find(node->getId());
-    if(ii == context->shared->mapSymbol.end())
-    {
-        EmitSymbolInfo info = emitSymbolDecl(context, node);
-        context->shared->mapSymbol.insert(std::make_pair(node->getId(), info));
-    }
+    if(ii != context->shared->mapSymbol.end())
+        return ii->second;
 
-    // TODO: some special-casing for nodes of composite texture-sampler type
-    emit(context, node->getName());
+    EmitSymbolInfo info = emitSymbolDecl(context, node);
+    context->shared->mapSymbol.insert(std::make_pair(node->getId(), info));
+    return info;
+}
+
+void emitSymbolExp(EmitContext* context, glslang::TIntermSymbol* node)
+{
+    // TODO: some special-casing for nodes of composite texture-sampler type?
+
+    EmitSymbolInfo info = getSymbolInfo(context, node);
+    emit(context, info.name);
 }
 
 void emitExp(EmitContext* context, TIntermNode* node)
@@ -1054,7 +1148,7 @@ void emitExp(EmitContext* context, TIntermNode* node)
         CASE(Dot, dot);
         CASE(Atan, atan);
         CASE(Clamp, clamp);
-        CASE(Mix, mix); // TODO: map to HLSL version
+        CASE(Mix, lerp);
         CASE(Step, step);
         CASE(SmoothStep, smoothstep);
         CASE(Distance, distance);
@@ -1413,7 +1507,15 @@ void emitExp(EmitContext* context, TIntermNode* node)
                 emitExp(context, nn->getLeft());
                 emit(context, ").");
 
-                emit(context, nn->getType().getFieldName());
+                // TODO: this logic is duplicated with the declaration site for structs.
+                // A better approach would avoid this interaction by saving field names
+                // at declaration time, and hten re-using them...
+                std::string fieldName = nn->getType().getFieldName().c_str();
+                if(isNameUsed(&context->shared->reservedNames, fieldName))
+                {
+                    fieldName += "_1";
+                }
+                emit(context, fieldName);
             }
             break;
 
@@ -1618,13 +1720,34 @@ void emitStmt(EmitContext* context, TIntermNode* node)
     }
 }
 
+struct WithNameScope
+{
+    EmitContext*    context;
+    EmitNameScope scope;
+
+    WithNameScope(EmitContext* context)
+        : context(context)
+    {
+        scope.parent = context->nameScope;
+        context->nameScope = &scope;
+    }
+
+    ~WithNameScope()
+    {
+        context->nameScope = scope.parent;
+    }
+};
+
 void emitFuncDecl(EmitContext* context, glslang::TIntermAggregate* funcDecl)
 {
     // TODO: maybe skip the entry-point function during this part...
 
+    // push a scope for locally-declared names
+    WithNameScope funcScope(context);
+
     glslang::TString name = funcDecl->getName();
     Declarator declarator = { kDeclaratorFlavor_FuncName, NULL };
-    declarator.name = &name;
+    declarator.name = name.c_str();
 
     emitTypedDecl(context, funcDecl->getType(), &declarator);
     emit(context, "(");
@@ -1656,11 +1779,10 @@ void emitFuncDecl(EmitContext* context, glslang::TIntermAggregate* funcDecl)
             break;
         }
 
-        emitTypedDecl(context, paramType, param->getName());
+        EmitSymbolInfo paramInfo = createLocalName(context, param->getName());
+        context->shared->mapSymbol.insert(std::make_pair(param->getId(), paramInfo));
 
-        // record that we've declared the parameter, so we don't repeat work
-        context->shared->mapSymbol.insert(std::make_pair(param->getId(), EmitSymbolInfo()));
-        
+        emitTypedDecl(context, paramType, paramInfo.name);
     }
     context->declSeparator = NULL;
     emit(context, ")\n");
@@ -1831,6 +1953,7 @@ int main(
         SharedEmitContext sharedEmitContext;
         initSharedEmitContext(&sharedEmitContext);
         EmitContext emitContext = { &sharedEmitContext, sharedEmitContext.mainSpan };
+        emitContext.nameScope = &sharedEmitContext.globalNames;
         emitDecls(&emitContext, intermediate->getTreeRoot());
 
         StringSpan outputText = join(&sharedEmitContext);
