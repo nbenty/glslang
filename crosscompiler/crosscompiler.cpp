@@ -288,6 +288,7 @@ struct SharedEmitContext
 {
     EmitSpan* mainSpan;
     EmitSpan* structDeclSpan;
+    EmitSpan* cbufferDeclSpan;
 
     std::map<int, EmitSymbolInfo> mapSymbol;
     std::map<glslang::TTypeList const*, EmitStructInfo> mapStruct;
@@ -338,6 +339,7 @@ EmitSpan* allocateSpan(SharedEmitContext* shared)
 void initSharedEmitContext(SharedEmitContext* shared)
 {
     shared->structDeclSpan = allocateSpan(shared);
+    shared->cbufferDeclSpan = allocateSpan(shared);
     shared->mainSpan = allocateSpan(shared);
 
     shared->globalNames.parent = &shared->reservedNames;
@@ -540,18 +542,8 @@ void emitDeclarator(EmitContext* context, Declarator* declarator)
     }
 }
 
-void emitStructDecl(EmitContext* inContext, glslang::TType const& type, glslang::TTypeList const* fields)
+void emitAggTypeMemberDecls(EmitContext* context, glslang::TTypeList const* fields)
 {
-    EmitSpan* span = allocateSpan();
-
-    EmitContext subContext = *inContext;
-    subContext.span = span;
-    subContext.declSeparator = NULL;
-    EmitContext* context = &subContext;
-
-    emit(context, "struct ");
-    emit(context, type.getTypeName());
-    emit(context, "\n{\n");
     for(auto field : *fields)
     {
         // Here we check if the field name is a reserved word, and rename it if needed.
@@ -566,6 +558,21 @@ void emitStructDecl(EmitContext* inContext, glslang::TType const& type, glslang:
         emitTypedDecl(context, *field.type, fieldName);
         emit(context, ";\n");
     }
+}
+
+void emitStructDecl(EmitContext* inContext, glslang::TType const& type, glslang::TTypeList const* fields)
+{
+    EmitSpan* span = allocateSpan();
+
+    EmitContext subContext = *inContext;
+    subContext.span = span;
+    subContext.declSeparator = NULL;
+    EmitContext* context = &subContext;
+
+    emit(context, "struct ");
+    emit(context, type.getTypeName());
+    emit(context, "\n{\n");
+    emitAggTypeMemberDecls(context, fields);
     emit(context, "};\n");
 
     appendSpan(&subContext.shared->structDeclSpan->children, span);
@@ -1049,19 +1056,42 @@ EmitSymbolInfo emitUniformDecl(EmitContext* context, glslang::TIntermSymbol* nod
     return info;
 }
 
-EmitSymbolInfo emitUniformBlockDecl(EmitContext* context, glslang::TIntermSymbol* node)
+EmitSymbolInfo emitUniformBlockDecl(EmitContext* inContext, glslang::TIntermSymbol* node)
 {
-    EmitSymbolInfo info = createGlobalName(context, node->getName());
+    EmitSpan* span = allocateSpan();
+
+    EmitContext subContext = *inContext;
+    subContext.span = span;
+    subContext.declSeparator = NULL;
+    EmitContext* context = &subContext;
+
+
+    EmitSymbolInfo info = createGlobalName(context, node->getType().getTypeName());
 
     // TODO: maybe don't discover uniform blocks on the fly like this,
     // and instead use the reflection interface to walk them more directly
 
-    // TODO: need to direct this to the right place!!!
     emit(context, "cbuffer ");
-    emit(context, node->getName());
+    emit(context, info.name);
     emit(context, "\n{\n");
+
+    // Note: we declare the cbuffer as containing a single struct that
+    // uses the same name as the cbuffer itself, so that use sites can
+    // refer to it as `block.member`, whereas HLSL defaults to just using `member`
+    //
+    // TODO: evaluate whether this is a good idea or not.
+    emit(context, "struct\n{\n");
+
+    emitAggTypeMemberDecls(context, node->getType().getStruct());
+
+    emit(context, "} ");
+    emit(context, info.name);
+    emit(context, ";\n");
+
     // TODO: enumerate the members here!!!
     emit(context, "};\n");
+
+    appendSpan(&subContext.shared->cbufferDeclSpan->children, span);
 
     return info;
 }
