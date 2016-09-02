@@ -261,6 +261,7 @@ void initEmitSpan(EmitSpan* span)
 struct EmitSymbolInfo
 {
     std::string name; // might be different than original symbol name
+    std::string prefix;
 };
 
 struct EmitStructInfo
@@ -286,14 +287,24 @@ void markNameUsed(EmitNameScope* scope, std::string const& name)
 
 struct SharedEmitContext
 {
+    glslang::TShader* glslangShader;
+    char const* entryPointName;
     EmitSpan* mainSpan;
     EmitSpan* structDeclSpan;
     EmitSpan* cbufferDeclSpan;
+    EmitSpan* globalVarDeclSpan;
+    EmitSpan* inputDeclSpan;
+    EmitSpan* systemInputDeclSpan;
+    EmitSpan* outputDeclSpan;
+    EmitSpan* systemOutputDeclSpan;
 
     std::map<int, EmitSymbolInfo> mapSymbol;
     std::map<glslang::TTypeList const*, EmitStructInfo> mapStruct;
     EmitNameScope reservedNames;
     EmitNameScope globalNames;
+    glslang::TIntermAggregate* entryPointFunc = NULL;
+    int inputCounter = 0;
+    int outputCounter = 0;
 
     EmitSpanList    spans;
 
@@ -335,20 +346,6 @@ EmitSpan* allocateSpan(SharedEmitContext* shared)
     // TODO: another allocator here?
     return allocateSpan(&shared->spans);
 }
-
-void initSharedEmitContext(SharedEmitContext* shared)
-{
-    shared->structDeclSpan = allocateSpan(shared);
-    shared->cbufferDeclSpan = allocateSpan(shared);
-    shared->mainSpan = allocateSpan(shared);
-
-    shared->globalNames.parent = &shared->reservedNames;
-
-    // reserve names that are keywords in HLSL, but not GLSL
-    markNameUsed(&shared->reservedNames, "texture");
-    markNameUsed(&shared->reservedNames, "linear");
-}
-
 struct EmitContext
 {
     SharedEmitContext*  shared;
@@ -366,12 +363,62 @@ struct EmitContext
     EmitNameScope*  nameScope;
 };
 
+void emit(EmitContext* context, char const* text);
+
 EmitSpan* allocateSpan(EmitContext* context)
 {
     EmitSpan* span = allocateSpan(context->shared);
     context->span = span;
     return span;
 }
+
+void initSharedEmitContext(SharedEmitContext* shared)
+{
+    // set up global name scopes
+    shared->globalNames.parent = &shared->reservedNames;
+
+    // reserve names that are keywords in HLSL, but not GLSL
+    markNameUsed(&shared->reservedNames, "texture");
+    markNameUsed(&shared->reservedNames, "linear");
+
+    // create the sequence of spans we need
+
+    EmitContext contextImpl = {shared};
+    EmitContext* context = &contextImpl;
+
+    allocateSpan(context);
+    emit(context, "// automatically generated code, do not edit\n");
+    emit(context, "\n// type declarations\n");
+    shared->structDeclSpan = allocateSpan(context);
+
+    allocateSpan(context);
+    emit(context, "\n// uniform buffers\n");
+    shared->cbufferDeclSpan = allocateSpan(context);
+
+    allocateSpan(context);
+    emit(context, "\n// global variables\n");
+    shared->globalVarDeclSpan = allocateSpan(context);
+
+    allocateSpan(context);
+    emit(context, "\n// stage input\n");
+    emit(context, "struct STAGE_INPUT\n{\n");
+    shared->inputDeclSpan           = allocateSpan(context);
+    shared->systemInputDeclSpan     = allocateSpan(context);
+
+    allocateSpan(context);
+    emit(context, "};\n");
+    emit(context, "\n// stage output\n");
+    emit(context, "struct STAGE_OUTPUT\n{\n");
+    shared->outputDeclSpan          = allocateSpan(context);
+    shared->systemOutputDeclSpan    = allocateSpan(context);
+
+    allocateSpan(context);
+    emit(context, "};\n");
+    emit(context, "\n// functions\n");
+    shared->mainSpan = allocateSpan(context);
+}
+
+
 
 void emitExp(EmitContext* context, TIntermNode* node);
 void emitTypedDecl(EmitContext* context, glslang::TType const& type, glslang::TString const& name);
@@ -485,6 +532,7 @@ enum DeclaratorFlavor
     kDeclaratorFlavor_FuncName,
     kDeclaratorFlavor_Array,
     kDeclaratorFlavor_Suffix,
+    kDeclaratorFlavor_Semantic,
 };
 
 struct Declarator
@@ -496,6 +544,11 @@ struct Declarator
         char const*             name;
         glslang::TType const*   type;
         char const*             suffix;
+        struct
+        {
+            char const* name;
+            int         index;
+        } semantic;
     };
 };
 
@@ -515,6 +568,15 @@ void emitDeclarator(EmitContext* context, Declarator* declarator)
     case kDeclaratorFlavor_FuncName:
         emit(context, " ");
         emitFuncName(context, declarator->name);
+        break;
+
+    case kDeclaratorFlavor_Semantic:
+        emit(context, " : ");
+        emit(context, declarator->semantic.name);
+        if(declarator->semantic.index)
+        {
+            emitInt(context, declarator->semantic.index);
+        }
         break;
 
     case kDeclaratorFlavor_Suffix:
@@ -1096,6 +1158,69 @@ EmitSymbolInfo emitUniformBlockDecl(EmitContext* inContext, glslang::TIntermSymb
     return info;
 }
 
+EmitSymbolInfo emitInputDecl(EmitContext* inContext, glslang::TIntermSymbol* node)
+{
+    EmitContext contextImpl = *inContext;
+    EmitContext* context = &contextImpl;
+
+    EmitSymbolInfo info = createGlobalName(context, node->getName());
+    info.prefix = "stage_input.";
+
+    context->span = context->shared->inputDeclSpan;
+
+    // TODO: how to handle semantics if input/output has a `struct` type?
+
+    Declarator nameDeclarator = { kDeclaratorFlavor_Name };
+    nameDeclarator.name = info.name.c_str();
+
+    Declarator semanticDeclarator = { kDeclaratorFlavor_Semantic, &nameDeclarator };
+    semanticDeclarator.semantic.name = "USER";
+    semanticDeclarator.semantic.index = (context->shared->outputCounter)++;
+
+    emitTypedDecl(context, node->getType(), &semanticDeclarator);
+    emit(context, ";\n");
+
+    return info;
+}
+
+EmitSymbolInfo emitOutputDecl(EmitContext* inContext, glslang::TIntermSymbol* node)
+{
+    EmitContext contextImpl = *inContext;
+    EmitContext* context = &contextImpl;
+
+    EmitSymbolInfo info = createGlobalName(context, node->getName());
+    info.prefix = "stage_output.";
+
+    context->span = context->shared->outputDeclSpan;
+
+
+    Declarator nameDeclarator = { kDeclaratorFlavor_Name };
+    nameDeclarator.name = info.name.c_str();
+
+    Declarator semanticDeclarator = { kDeclaratorFlavor_Semantic, &nameDeclarator };
+
+    // TODO: recognize special input/output semantics
+    EShLanguage stage = context->shared->glslangShader->getStage();
+
+    if(stage == EShLangFragment)
+    {
+        semanticDeclarator.semantic.name = "SV_Target";
+        semanticDeclarator.semantic.index = (context->shared->outputCounter)++;
+    }
+    else
+    {
+        semanticDeclarator.semantic.name = "USER";
+        semanticDeclarator.semantic.index = (context->shared->outputCounter)++;
+    }
+
+
+    emitTypedDecl(context, node->getType(), &semanticDeclarator);
+    emit(context, ";\n");
+
+    return info;
+}
+
+
 EmitSymbolInfo emitSymbolDecl(EmitContext* context, glslang::TIntermSymbol* node)
 {
     EmitSymbolInfo info;
@@ -1103,9 +1228,11 @@ EmitSymbolInfo emitSymbolDecl(EmitContext* context, glslang::TIntermSymbol* node
 
     if(type.getQualifier().isPipeInput())
     {
+        return emitInputDecl(context, node);
     }
     else if(type.getQualifier().isPipeOutput())
     {
+        return emitOutputDecl(context, node);
     }
     else if(type.getQualifier().isUniformOrBuffer())
     {
@@ -1161,6 +1288,7 @@ void emitSymbolExp(EmitContext* context, glslang::TIntermSymbol* node)
     // TODO: some special-casing for nodes of composite texture-sampler type?
 
     EmitSymbolInfo info = getSymbolInfo(context, node);
+    emit(context, info.prefix);
     emit(context, info.name);
 }
 
@@ -1768,8 +1896,19 @@ struct WithNameScope
     }
 };
 
+bool isEntryPoint(EmitContext* context, glslang::TIntermAggregate* funcDecl)
+{
+    char const* entryPointName = context->shared->entryPointName;
+    return strncmp(funcDecl->getName().c_str(), entryPointName, strlen(entryPointName)) == 0;
+}
+
 void emitFuncDecl(EmitContext* context, glslang::TIntermAggregate* funcDecl)
 {
+    if(isEntryPoint(context, funcDecl))
+    {
+        context->shared->entryPointFunc = funcDecl;
+        return;
+    }
     // TODO: maybe skip the entry-point function during this part...
 
     // push a scope for locally-declared names
@@ -1831,6 +1970,37 @@ void emitFuncDecl(EmitContext* context, glslang::TIntermAggregate* funcDecl)
         emitStmt(&bodyContext, child);
     }
     emit(context, "}\n");
+}
+
+void emitEntryPointDecl(EmitContext* context, glslang::TIntermAggregate* funcDecl)
+{
+
+    // push a scope for locally-declared names
+    WithNameScope funcScope(context);
+
+    emit(context, "\n// entry point\n");
+    emit(context, "STAGE_OUTPUT ");
+    emitFuncName(context, funcDecl->getName());
+    emit(context, "( STAGE_INPUT stage_input )\n");
+    emit(context, "{\n");
+    emit(context, "STAGE_OUTPUT stage_output;\n");
+
+
+    EmitSpan* localSpan = allocateSpan(context);
+    EmitSpan* restSpan = allocateSpan(context);
+
+    EmitContext bodyContext = *context;
+    bodyContext.localSpan = localSpan;
+
+    // TODO: emit any global initialization logic here
+
+    for(auto child : funcDecl->getSequence())
+    {
+        emitStmt(&bodyContext, child);
+    }
+
+    emit(context, "return stage_output;\n");
+    emit(context, "};\n");
 }
 
 void emitDecl(EmitContext* context, TIntermNode* node)
@@ -1981,10 +2151,16 @@ int main(
         glslang::TIntermediate* intermediate = ((HackShader*) shader)->getIntermediate();
 
         SharedEmitContext sharedEmitContext;
+        sharedEmitContext.glslangShader = shader;
+        sharedEmitContext.entryPointName = options.entryPointName ? options.entryPointName : "main";
         initSharedEmitContext(&sharedEmitContext);
         EmitContext emitContext = { &sharedEmitContext, sharedEmitContext.mainSpan };
         emitContext.nameScope = &sharedEmitContext.globalNames;
         emitDecls(&emitContext, intermediate->getTreeRoot());
+        if(sharedEmitContext.entryPointFunc)
+        {
+            emitEntryPointDecl(&emitContext, sharedEmitContext.entryPointFunc);
+        }
 
         StringSpan outputText = join(&sharedEmitContext);
         if(options.outputPath)
