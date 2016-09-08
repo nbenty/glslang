@@ -5696,7 +5696,7 @@ void TParseContext::declareBlock(const TSourceLoc& loc, TTypeList& typeList, con
         }
 
         // BEGIN FALCOR
-        if (extensionTurnedOn(E_GL_NV_shader_buffer_load))
+        if (extensionTurnedOn(E_GL_ARB_bindless_texture))
         { /* allow opaque types in blocks */ }
         else
         // END FALCOR
