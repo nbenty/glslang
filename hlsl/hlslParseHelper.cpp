@@ -122,8 +122,15 @@ bool HlslParseContext::parseShaderStrings(TPpContext& ppContext, TInputScanner& 
         // Print a message formated such that if you click on the message it will take you right to
         // the line through most UIs.
         const glslang::TSourceLoc& sourceLoc = input.getSourceLoc();
+// BEGIN FALCOR
+#if 1
+        error(sourceLoc, "syntax error", "", "");
+#else
+// ELSE
         printf("\n%s(%i): error at column %i, HLSL translation failed.\n", sourceLoc.name, sourceLoc.line,
                                                                                            sourceLoc.column);
+#endif
+// END FACLOR
     }
     return numErrors == 0;
 }
@@ -4404,7 +4411,14 @@ void HlslParseContext::declareBlock(const TSourceLoc& loc, TType& type, const TS
     //
 
     //?? need the block name to be a typename?
+// BEGIN FALCOR
+#if 1
+    TType blockType(&typeList, type.getTypeName(), type.getQualifier());
+#else
+// ELSE
     TType blockType(&typeList, "" /* *blockName */, type.getQualifier());
+#endif
+// END FALCOR
     if (arraySizes)
         blockType.newArraySizes(*arraySizes);
 

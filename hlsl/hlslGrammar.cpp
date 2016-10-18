@@ -1315,7 +1315,16 @@ bool HlslGrammar::acceptStruct(TType& type)
     }
 
     // post_decls
+
+// BEGIN FALCOR
+    type.getQualifier() = qualifier;
+// END FALCOR
+
     acceptPostDecls(type);
+
+// BEGIN FALCOR
+    qualifier = type.getQualifier();
+// END FALCOR
 
     // LEFT_BRACE
     if (! acceptTokenClass(EHTokLeftBrace)) {

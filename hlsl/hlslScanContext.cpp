@@ -247,7 +247,13 @@ void HlslScanContext::fillInKeywordMap()
     (*KeywordMap)["sampler_state"] =           EHTokSamplerState;
     (*KeywordMap)["SamplerState"] =            EHTokSamplerState;
     (*KeywordMap)["SamplerComparisonState"] =  EHTokSamplerComparisonState;
+// BEGIN FALCOR
+#if 0
+// END FALCOR
     (*KeywordMap)["texture"] =                 EHTokTexture;
+// BEGIN FALCOR
+#endif
+// END FALCOR
     (*KeywordMap)["Texture1D"] =               EHTokTexture1d;
     (*KeywordMap)["Texture1DArray"] =          EHTokTexture1darray;
     (*KeywordMap)["Texture2D"] =               EHTokTexture2d;
